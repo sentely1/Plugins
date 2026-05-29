@@ -1,0 +1,155 @@
+using Oxide.Core;
+using Oxide.Core.Libraries.Covalence;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
+ 
+namespace Oxide.Plugins
+{
+    [Info("BasicAnnouncements", "koupioum", "1.0.0")]
+    [Description("Simple automated announcements for Rust with overly unessacary safety precautions")]
+
+    public class BasicAnnouncements : CovalencePlugin
+    {
+        private ConfigData config;
+        private Timer.TimerInstance announcementTimer;
+        private int currentMessage = 0;
+ 
+        private const string PermUse = "basicannouncements.use";
+        private const int MaxMessageLength = 256;
+ 
+        // Strips any <...> rich-text/sprite/color markup from untrusted command input.
+        private static readonly Regex TagRegex = new Regex("<.*?>", RegexOptions.Compiled);
+ 
+        #region Configuration
+ 
+        private class ConfigData
+        {
+            public float AnnouncementInterval = 300f;
+            public string Prefix = "[SERVER]";
+ 
+            // Off by default untrusted defaultly and markup is removed
+            public bool AllowFormattingInCommand = false;
+ 
+            public List<string> Messages = new List<string>
+            {
+                "Welcome to the server!",
+                "Join our Discord: discord.gg/yourserver",
+                "Remember to read the rules!",
+                "Have fun and good luck!"
+            };
+        }
+ 
+        protected override void LoadDefaultConfig()
+        {
+            config = new ConfigData();
+            SaveConfig();
+        }
+ 
+        protected override void LoadConfig()
+        {
+            base.LoadConfig();
+            try
+            {
+                config = Config.ReadObject<ConfigData>();
+                if (config == null)
+                    throw new System.Exception("Config is null");
+ 
+                // Clamp to sane bounds so a misconfigured interval can't hammer the server.
+                if (config.AnnouncementInterval < 10f)
+                {
+                    PrintWarning("AnnouncementInterval too low; clamping to 10s.");
+                    config.AnnouncementInterval = 10f;
+                }
+            }
+            catch
+            {
+                PrintWarning("Config file is corrupted or unreadable, creating new config.");
+                LoadDefaultConfig();
+            }
+        }
+ 
+        protected override void SaveConfig() => Config.WriteObject(config, true);
+ 
+        #endregion
+ 
+        #region Localization
+ 
+        protected override void LoadDefaultMessages()
+        {
+            lang.RegisterMessages(new Dictionary<string, string>
+            {
+                ["NoPermission"] = "You don't have permission to use this command.",
+                ["Usage"] = "Usage: /announce <message>"
+            }, this);
+        }
+ 
+        private string Lang(string key, string playerId = null) =>
+            lang.GetMessage(key, this, playerId);
+ 
+        #endregion
+ 
+        #region Lifecycle
+ 
+        private void Init()
+        {
+            permission.RegisterPermission(PermUse, this);
+            StartTimer();
+        }
+ 
+        private void Unload() => announcementTimer?.Destroy();
+ 
+        private void StartTimer()
+        {
+            announcementTimer?.Destroy();
+            announcementTimer = timer.Every(config.AnnouncementInterval, BroadcastNext);
+        }
+ 
+        private void BroadcastNext()
+        {
+            if (config.Messages == null || config.Messages.Count == 0)
+                return;
+ 
+            if (currentMessage >= config.Messages.Count)
+                currentMessage = 0;
+ 
+            server.Broadcast($"{config.Prefix} {config.Messages[currentMessage]}");
+            currentMessage = (currentMessage + 1) % config.Messages.Count;
+        }
+ 
+        #endregion
+ 
+        #region Commands
+ 
+        [Command("announce")]
+        private void AnnounceCommand(IPlayer player, string command, string[] args)
+        {
+            if (!player.HasPermission(PermUse))
+            {
+                player.Reply(Lang("NoPermission", player.Id));
+                return;
+            }
+ 
+            if (args.Length == 0)
+            {
+                player.Reply(Lang("Usage", player.Id));
+                return;
+            }
+ 
+            string message = string.Join(" ", args).Trim();
+ 
+            // I stripped markup unless explicitly its allowed inside of the cfg
+            if (!config.AllowFormattingInCommand)
+                message = TagRegex.Replace(message, string.Empty);
+ 
+            if (message.Length == 0)
+                return;
+ 
+            if (message.Length > MaxMessageLength)
+                message = message.Substring(0, MaxMessageLength);
+ 
+            server.Broadcast($"{config.Prefix} {message}");
+        }
+ 
+        #endregion
+    }
+}
